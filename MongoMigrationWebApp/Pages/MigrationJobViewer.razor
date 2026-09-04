@@ -1,4 +1,4 @@
-﻿@page "/migrationjobviewer/{jobId}"
+@page "/migrationjobviewer/{jobId}"
 @using MigrationJobType = OnlineMongoMigrationProcessor.MigrationJob
 @using MongoMigrationWebApp.Components
 @using MongoMigrationWebApp.Helpers
@@ -1167,7 +1167,7 @@ else if (@_showLogBackupFile)
     private void GoBack()
     {
         _refreshTimer?.Dispose();
-        NavigationManager.NavigateTo("/"); // Navigate back to the previous page
+        NavigationManager.NavigateTo(""); // Navigate back to the previous page
     }
 
     private async Task ToggleAutoRefresh()
@@ -1447,7 +1447,7 @@ else if (@_showLogBackupFile)
     {
         if (CurrentlyLoadedMigrationJob == null) // Fixed the condition to check for null
         {
-            NavigationManager.NavigateTo("/", replace: true);
+            NavigationManager.NavigateTo("", replace: true);
             return;
         }
 

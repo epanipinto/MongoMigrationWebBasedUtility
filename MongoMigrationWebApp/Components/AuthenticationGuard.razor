@@ -30,7 +30,7 @@ else if (isChecking)
             var returnUrl = Navigation.ToBaseRelativePath(Navigation.Uri);
             if (returnUrl != "login" && !returnUrl.StartsWith("login?"))
             {
-                Navigation.NavigateTo($"/login?returnUrl={Uri.EscapeDataString(returnUrl)}");
+                Navigation.NavigateTo($"login?returnUrl={Uri.EscapeDataString(returnUrl)}");
             }
         }
         

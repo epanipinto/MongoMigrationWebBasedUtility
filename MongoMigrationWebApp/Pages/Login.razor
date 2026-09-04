@@ -91,14 +91,14 @@
         // Check if password needs to be set for first time
         if (!await PasswordManager.IsPasswordSetAsync())
         {
-            Navigation.NavigateTo("/change-password");
+            Navigation.NavigateTo("change-password");
             return;
         }
 
         // Check if already authenticated
         if (await AuthService.IsAuthenticatedAsync())
         {
-            Navigation.NavigateTo(ReturnUrl ?? "/", true);
+            Navigation.NavigateTo(ReturnUrl ?? "", true);
         }
     }
 
@@ -113,7 +113,7 @@
 
             if (isValid)
             {
-                Navigation.NavigateTo(ReturnUrl ?? "/", true);
+                Navigation.NavigateTo(ReturnUrl ?? "", true);
             }
             else
             {
