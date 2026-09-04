@@ -153,6 +153,41 @@ public sealed class MigrationJobsApiTests : IClassFixture<MigrationApiFactory>, 
         Assert.Equal(TargetConnectionString, target);
     }
 
+    /// <summary>
+    /// Re-importing one seeded job should not cost every other job on the instance, which is all
+    /// the reset endpoint could offer before.
+    /// </summary>
+    [Fact]
+    public async Task Deletes_one_job_and_leaves_the_others_alone()
+    {
+        using var client = _factory.CreateApiClient();
+
+        var keep = await ImportAsync(client, "ci-delete-keep");
+        var drop = await ImportAsync(client, "ci-delete-drop");
+
+        var response = await client.DeleteAsync($"/api/migration-jobs/{drop}");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        using var list = await GetJsonAsync(client, "/api/migration-jobs");
+        Assert.Equal(1, list.RootElement.GetProperty("count").GetInt32());
+        Assert.Equal(keep, list.RootElement.GetProperty("jobs")[0].GetProperty("id").GetString());
+
+        // Credentials must not outlive the job they belong to.
+        var vault = _factory.Services.GetRequiredService<ConnectionStringVault>();
+        Assert.False(vault.TryLoad(drop, out _, out _));
+        Assert.True(vault.TryLoad(keep, out _, out _));
+    }
+
+    [Fact]
+    public async Task Rejects_deleting_a_job_that_does_not_exist()
+    {
+        using var client = _factory.CreateApiClient();
+
+        var response = await client.DeleteAsync($"/api/migration-jobs/{Guid.NewGuid()}");
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
     [Fact]
     public async Task Reuses_the_existing_job_when_a_name_is_imported_twice()
     {

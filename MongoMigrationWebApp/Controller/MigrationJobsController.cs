@@ -36,6 +36,38 @@ namespace MongoMigrationWebApp.Controller
             return Ok(new { deletedJobs = _jobManager.ClearAllJobFiles() });
         }
 
+        /// <summary>
+        /// Deletes one job, so a seeded job can be re-imported without resetting every job on the
+        /// instance. Mirrors the delete button on the jobs page, including its running-job guard.
+        /// </summary>
+        [HttpDelete("{jobId}")]
+        public async Task<IActionResult> Delete(string jobId)
+        {
+            var denied = await AuthorizeAsync();
+            if (denied != null)
+                return denied;
+
+            var job = _jobManager.GetMigrationJobById(jobId);
+            if (job == null)
+                return NotFound($"No job with id {jobId}.");
+
+            if (_jobManager.IsProcessRunning(jobId))
+                return Conflict($"Job {job.Name} is running. Pause it before deleting.");
+
+            var name = job.Name;
+            _jobManager.ClearJobFiles(jobId);
+
+            // CurrentlyActiveJob reloads from this id, so leaving it set resurrects the job from
+            // disk and every later import is rejected as a cross-job write.
+            if (string.Equals(MigrationJobContext.ActiveMigrationJobId, jobId, StringComparison.Ordinal))
+            {
+                MigrationJobContext.ActiveMigrationJobId = string.Empty;
+                MigrationJobContext.ClearCurrentlyActiveJobCache();
+            }
+
+            return Ok(new { jobId, name, deleted = true });
+        }
+
         [HttpGet]
         public async Task<IActionResult> List()
         {
