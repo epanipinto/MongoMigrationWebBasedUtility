@@ -1,4 +1,4 @@
-﻿@inherits LayoutComponentBase
+@inherits LayoutComponentBase
 @inject AuthenticationService AuthService
 @inject NavigationManager Navigation
 
@@ -13,7 +13,7 @@
                     <Authorized>
                         <div class="d-flex align-items-center gap-3">
                             <div class="small">@AppVersion</div>
-                            <button class="btn btn-sm btn-outline-secondary" @onclick="@(() => Navigation.NavigateTo("/change-password"))">
+                            <button class="btn btn-sm btn-outline-secondary" @onclick="@(() => Navigation.NavigateTo("change-password"))">
                                 <i class="bi bi-key"></i> Change Password
                             </button>
                             <button class="btn btn-sm btn-outline-secondary" @onclick="HandleLogout">
@@ -46,6 +46,6 @@
     private async Task HandleLogout()
     {
         await AuthService.LogoutAsync();
-        Navigation.NavigateTo("/login", true);
+        Navigation.NavigateTo("login", true);
     }
 }
