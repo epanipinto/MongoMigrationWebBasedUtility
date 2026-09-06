@@ -246,12 +246,19 @@ namespace MongoMigrationWebApp.Controller
             if (!string.IsNullOrEmpty(job.TargetEndpoint) && job.TargetEndpoint != targetEndpoint)
                 return BadRequest($"Target endpoint '{targetEndpoint}' does not match the job's '{job.TargetEndpoint}'.");
 
-            MigrationJobContext.SaveMigrationJob(job);
-            MigrationJobContext.SaveJobList();
-
             // Both flags are mutated by the calls below, so report the pre-start values.
             var resumed = job.IsStarted;
             var syncBack = job.ProcessingSyncBack && !job.IsSimulatedRun;
+
+            // The Blazor pages set this themselves before starting and JobManager.StartMigration does
+            // not, so the API path left it false. MongoDumpRestoreCordinator stops its timer while it
+            // is false, which killed every DumpAndRestore job one tick after it started.
+            // SyncBackProcessor sets it on its own path.
+            if (!syncBack)
+                job.IsStarted = true;
+
+            MigrationJobContext.SaveMigrationJob(job);
+            MigrationJobContext.SaveJobList();
 
             if (syncBack)
             {

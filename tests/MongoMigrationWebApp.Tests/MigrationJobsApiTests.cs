@@ -9,8 +9,9 @@ namespace MongoMigrationWebApp.Tests;
 
 /// <summary>
 /// Covers the fork-added migration job API (MongoMigrationWebApp/Controller/MigrationJobsController.cs).
-/// Only paths that stop before a migration actually starts are exercised — nothing here needs, or
-/// contacts, a MongoDB server.
+/// Every path here stops before a migration actually starts, so nothing contacts a MongoDB server —
+/// except Marks_a_started_job_as_started, which has to start one to observe the flag and therefore
+/// restores the process-wide state it touches.
 /// </summary>
 public sealed class MigrationJobsApiTests : IClassFixture<MigrationApiFactory>, IAsyncLifetime
 {
@@ -216,6 +217,36 @@ public sealed class MigrationJobsApiTests : IClassFixture<MigrationApiFactory>, 
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.Contains(SourceEndpoint, await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task Marks_a_started_job_as_started()
+    {
+        using var client = _factory.CreateApiClient();
+        var jobId = await ImportAsync(client, "ci-is-started");
+
+        try
+        {
+            var response = await client.PostAsJsonAsync($"/api/migration-jobs/{jobId}/start", new
+            {
+                sourceConnectionString = SourceConnectionString,
+                targetConnectionString = TargetConnectionString
+            });
+            response.EnsureSuccessStatusCode();
+
+            // MongoDumpRestoreCordinator stops its timer while CurrentlyActiveJob.IsStarted is false,
+            // so a DumpAndRestore job started over the API used to die one tick in. The Blazor pages
+            // set this themselves, which is why only the API path was affected.
+            using var list = await GetJsonAsync(client, "/api/migration-jobs");
+            var job = list.RootElement.GetProperty("jobs").EnumerateArray().Single();
+            Assert.True(job.GetProperty("isStarted").GetBoolean());
+        }
+        finally
+        {
+            // This is the only test that starts a worker, and both reset and import refuse to run
+            // while one is live (409), so every later test would fail on a shared static.
+            _factory.Services.GetRequiredService<JobManager>().StopMigration();
+        }
     }
 
     [Fact]
