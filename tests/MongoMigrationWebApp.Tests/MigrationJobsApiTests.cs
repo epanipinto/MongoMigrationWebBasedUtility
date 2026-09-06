@@ -288,11 +288,84 @@ public sealed class MigrationJobsApiTests : IClassFixture<MigrationApiFactory>, 
         }
     }
 
-    private static async Task<string> ImportAsync(HttpClient client, string name)
+    [Fact]
+    public async Task Refuses_to_cut_over_a_job_that_does_not_exist()
     {
+        using var client = _factory.CreateApiClient();
+
+        var response = await client.PostAsJsonAsync($"/api/migration-jobs/{Guid.NewGuid()}/cutover", new { });
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Refuses_to_cut_over_an_offline_job()
+    {
+        using var client = _factory.CreateApiClient();
+        var jobId = await ImportAsync(client, "ci-cutover-offline");
+
+        var response = await client.PostAsJsonAsync($"/api/migration-jobs/{jobId}/cutover", new { });
+
+        // An Offline job completes on its own; there is nothing to cut over to.
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        Assert.Contains("Offline", await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task Refuses_to_cut_over_a_job_with_no_collections()
+    {
+        using var client = _factory.CreateApiClient();
+        var jobId = await ImportAsync(client, "ci-cutover-empty", cdcMode: "Online");
+
+        var response = await client.PostAsJsonAsync($"/api/migration-jobs/{jobId}/cutover", new { });
+
+        // Helper.IsOfflineJobCompleted walks MigrationUnitBasics without a null check, so reaching
+        // it with no collections threw a 500 rather than refusing the cut over.
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        Assert.Contains("no collections", await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task Refuses_to_pause_a_job_that_does_not_exist()
+    {
+        using var client = _factory.CreateApiClient();
+
+        var response = await client.PostAsJsonAsync($"/api/migration-jobs/{Guid.NewGuid()}/pause", new { mode = "controlled" });
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Rejects_an_unknown_pause_mode()
+    {
+        using var client = _factory.CreateApiClient();
+        var jobId = await ImportAsync(client, "ci-pause-mode");
+
+        var response = await client.PostAsJsonAsync($"/api/migration-jobs/{jobId}/pause", new { mode = "sideways" });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Pauses_a_job_gracefully_by_default()
+    {
+        using var client = _factory.CreateApiClient();
+        var jobId = await ImportAsync(client, "ci-pause-default");
+
+        var response = await client.PostAsJsonAsync($"/api/migration-jobs/{jobId}/pause", new { });
+        response.EnsureSuccessStatusCode();
+
+        // Defaulting to "immediate" would cancel in-flight work on a bare call.
+        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("controlled", body.RootElement.GetProperty("mode").GetString());
+    }
+
+    private static async Task<string> ImportAsync(HttpClient client, string name, string? cdcMode = null)
+    {
+        object job = cdcMode == null ? new { name } : new { name, cdcMode };
         var response = await client.PostAsJsonAsync("/api/migration-jobs/import", new
         {
-            job = new { name },
+            job,
             sourceConnectionString = SourceConnectionString,
             targetConnectionString = TargetConnectionString
         });

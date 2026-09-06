@@ -282,6 +282,143 @@ namespace MongoMigrationWebApp.Controller
             });
         }
 
+        /// <summary>
+        /// Cut Over: drain the forward change stream, then mark the job terminal. Irreversible.
+        /// </summary>
+        /// <remarks>
+        /// Mirrors the UI's Cut Over path, including the part that is easy to get wrong: it asks
+        /// the change stream to close gracefully and waits for the processor's outer loop to exit,
+        /// rather than calling StopMigration, which cancels the token and drops the in-flight batch.
+        /// </remarks>
+        [HttpPost("{jobId}/cutover")]
+        public async Task<IActionResult> Cutover(string jobId, [FromBody] MigrationJobCutoverRequest? request)
+        {
+            var denied = await AuthorizeAsync();
+            if (denied != null)
+                return denied;
+
+            var job = _jobManager.GetMigrationJobById(jobId);
+            if (job == null)
+                return NotFound($"No job with id {jobId}.");
+
+            if (job.IsCompleted)
+                return Conflict($"Job {job.Name} has already completed.");
+
+            if (!Helper.IsOnline(job))
+                return Conflict($"Job {job.Name} is Offline. It completes on its own and has no cut over.");
+
+            // Before IsOfflineJobCompleted, which dereferences this list without a null check.
+            var units = job.MigrationUnitBasics ?? new List<MigrationUnitBasic>();
+            if (units.Count == 0)
+                return Conflict($"Job {job.Name} has no collections to cut over.");
+
+            // The two conditions the UI uses to enable the button.
+            if (!Helper.IsOfflineJobCompleted(job))
+                return Conflict($"Job {job.Name} has not finished its bulk copy.");
+
+            var indexPending = units
+                .Where(mu => Helper.IsMigrationUnitValid(mu) && !mu.IndexBuildComplete && mu.IndexPercent < 100)
+                .Select(mu => $"{mu.DatabaseName}.{mu.CollectionName}")
+                .ToList();
+            if (indexPending.Count > 0)
+            {
+                return Conflict($"Index builds are still running on {indexPending.Count} collection(s): "
+                    + string.Join(", ", indexPending.Take(5)) + ".");
+            }
+
+            // The UI only warns about drain in a dialog a human reads. There is no human here, so
+            // cutting over with changes still in flight has to be asked for explicitly.
+            var pending = units.Where(Helper.IsMigrationUnitValid).Sum(mu => mu.CSUpdatesInLastBatch);
+            if (pending > 0 && !(request?.Force ?? false))
+            {
+                return Conflict($"The forward change stream reported {pending} change(s) in its last batch. "
+                    + "Wait for two consecutive batches at 0, or pass force=true to cut over anyway.");
+            }
+
+            job.PendingAction = PendingChangeStreamAction.Cutover;
+            MigrationJobContext.SaveMigrationJob(job);
+            MigrationJobContext.RequestChangeStreamAutoClose("API: Cut Over");
+
+            try
+            {
+                await WaitForChangeStreamProcessorExitAsync();
+            }
+            finally
+            {
+                MigrationJobContext.ResetChangeStreamAutoClose();
+            }
+
+            job.IsCancelled = true;
+            job.IsCompleted = true;
+            job.PendingAction = PendingChangeStreamAction.None;
+            MigrationJobContext.SaveMigrationJob(job);
+
+            return Ok(new
+            {
+                jobId = job.Id,
+                name = job.Name,
+                cutOver = true,
+                forced = request?.Force ?? false,
+                pendingChangesAtCutover = pending
+            });
+        }
+
+        /// <summary>
+        /// Pauses a running job. "controlled" stops taking new work and lets in-flight chunks
+        /// finish; "immediate" cancels everything now.
+        /// </summary>
+        [HttpPost("{jobId}/pause")]
+        public async Task<IActionResult> Pause(string jobId, [FromBody] MigrationJobPauseRequest? request)
+        {
+            var denied = await AuthorizeAsync();
+            if (denied != null)
+                return denied;
+
+            var job = _jobManager.GetMigrationJobById(jobId);
+            if (job == null)
+                return NotFound($"No job with id {jobId}.");
+
+            var mode = (request?.Mode ?? "controlled").Trim().ToLowerInvariant();
+            if (mode != "controlled" && mode != "immediate")
+                return BadRequest("mode must be 'controlled' or 'immediate'.");
+
+            if (mode == "controlled")
+            {
+                MigrationJobContext.RequestControlledPause("API: Controlled Pause");
+            }
+            else
+            {
+                // Off the request thread: StopMigration waits on the worker for up to 10 seconds.
+                await Task.Run(() => _jobManager.StopMigration());
+            }
+
+            MigrationJobContext.SaveMigrationJob(job);
+            return Ok(new { jobId = job.Id, name = job.Name, paused = true, mode });
+        }
+
+        /// <summary>
+        /// Bounded the same way the UI bounds it: two change-stream batch durations plus a minute.
+        /// </summary>
+        private static async Task WaitForChangeStreamProcessorExitAsync()
+        {
+            var batchDurationSec = 120;
+            try
+            {
+                var cfg = new MigrationSettings();
+                cfg.Load();
+                if (cfg.ChangeStreamBatchDuration > 0)
+                    batchDurationSec = cfg.ChangeStreamBatchDuration;
+            }
+            catch
+            {
+                // Fall back to the default bound; a missing settings file must not block cut over.
+            }
+
+            var deadline = DateTime.UtcNow.AddSeconds((batchDurationSec * 2) + 60);
+            while (DateTime.UtcNow < deadline && MigrationJobContext.IsChangeStreamProcessorRunning)
+                await Task.Delay(500);
+        }
+
         [HttpPost("import")]
         public async Task<IActionResult> Import([FromBody] MigrationJobImportRequest request)
         {
@@ -438,5 +575,24 @@ namespace MongoMigrationWebApp.Controller
         // Both optional: omit them to reuse what the job was started with.
         public string? SourceConnectionString { get; set; }
         public string? TargetConnectionString { get; set; }
+    }
+
+    public sealed class MigrationJobCutoverRequest
+    {
+        /// <summary>
+        /// Cut over even though the forward change stream still reports pending changes. The UI
+        /// only warns about this in a dialog; over the API there is no human to read it, so it
+        /// has to be asked for explicitly.
+        /// </summary>
+        public bool Force { get; set; }
+    }
+
+    public sealed class MigrationJobPauseRequest
+    {
+        /// <summary>
+        /// "controlled" stops taking new chunks and lets in-flight ones finish; "immediate"
+        /// cancels everything now. Defaults to controlled, which is the safe one.
+        /// </summary>
+        public string? Mode { get; set; }
     }
 }
