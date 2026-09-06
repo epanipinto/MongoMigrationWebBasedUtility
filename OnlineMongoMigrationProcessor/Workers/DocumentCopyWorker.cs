@@ -47,6 +47,25 @@ namespace OnlineMongoMigrationProcessor.Workers
         }
               
 
+        /// <summary>
+        /// Pages between in-flight progress checkpoints.
+        /// </summary>
+        /// <remarks>
+        /// The doc-count threshold on its own silently starves small collections: at the default
+        /// 250,000 docs / 5,000-doc pages that is one checkpoint per 50 pages, so anything under
+        /// 250,000 documents never completes a full interval and reports 0% for its entire run
+        /// before jumping to 100%. That threshold also happens to match the single-partition
+        /// cutoff (1,000,000 x PartitionFactor%), so the collections it blinds are exactly the
+        /// sub-cutoff ones that run for hours and most need progress. Capping at ~20 updates per
+        /// segment keeps them reporting without changing the cadence for large collections.
+        /// </remarks>
+        internal static int CalculatePagesPerSave(long targetCount, int pageSize, int saveProgressEveryNDocs)
+        {
+            int byDocThreshold = Math.Max(1, saveProgressEveryNDocs / Math.Max(1, pageSize));
+            long totalPages = Math.Max(1, targetCount / Math.Max(1, (long)pageSize));
+            return Math.Max(1, (int)Math.Min(byDocThreshold, totalPages / 20));
+        }
+
         private void UpdateProgress(
             string segmentId,
             MigrationUnit mu,
@@ -426,7 +445,7 @@ namespace OnlineMongoMigrationProcessor.Workers
             string segmentId)
         {
             int batchCount = 0;
-            int pagesPerSave = Math.Max(1, _saveProgressEveryNDocs / Math.Max(1, _pageSize));
+            int pagesPerSave = CalculatePagesPerSave(targetCount, _pageSize, _saveProgressEveryNDocs);
             var rawFindOptions = new FindOptions<RawBsonDocument>
             {
                 BatchSize = _pageSize,
@@ -548,7 +567,7 @@ namespace OnlineMongoMigrationProcessor.Workers
             string segmentId)
         {
             int batchCount = 0;
-            int pagesPerSave = Math.Max(1, _saveProgressEveryNDocs / Math.Max(1, _pageSize));
+            int pagesPerSave = CalculatePagesPerSave(targetCount, _pageSize, _saveProgressEveryNDocs);
             List<BsonValue> idBatch = new List<BsonValue>(_pageSize);
 
             try

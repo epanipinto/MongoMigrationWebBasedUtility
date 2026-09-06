@@ -29,6 +29,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="OnlineMongoMigrationProcessor.Tests" />
+    <InternalsVisibleTo Include="MongoMigrationWebApp.Tests" />
   </ItemGroup>
 
 </Project>
