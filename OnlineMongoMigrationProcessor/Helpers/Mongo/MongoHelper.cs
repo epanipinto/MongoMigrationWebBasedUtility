@@ -802,6 +802,29 @@ namespace OnlineMongoMigrationProcessor.Helpers.Mongo
                 }
                 catch (Exception ex)
                 {
+                    var scope = useServerLevel
+                        ? "server-level"
+                        : $"{mu?.DatabaseName}.{mu?.CollectionName}";
+
+                    // A start point older than the source oplog can never succeed, so re-anchor to
+                    // now rather than retrying the same rejected timestamp on every round.
+                    if (IsChangeStreamHistoryLost(ex))
+                    {
+                        var reanchoredUtc = DateTime.UtcNow;
+                        log.WriteLine($"{syncBackPrefix}Change stream start time {startedOnUtc:O} for {scope} is outside the source oplog, so the stream cannot be opened. Re-anchoring to {reanchoredUtc:O}; changes before that point cannot be captured. Details: {ex.Message}", LogType.Error);
+
+                        if (useServerLevel)
+                            job.SetChangeStreamStartedOn(syncBack, reanchoredUtc);
+                        else
+                            mu?.SetChangeStreamStartedOn(syncBack, reanchoredUtc);
+
+                        MigrationJobContext.SaveMigrationJob(job);
+                    }
+                    else
+                    {
+                        log.WriteLine($"{syncBackPrefix}Failed to set the change stream resume token for {scope}: {ex}", LogType.Error);
+                    }
+
                     skipLoops = true;
                 }
                 finally
@@ -819,6 +842,28 @@ namespace OnlineMongoMigrationProcessor.Helpers.Mongo
                     return;
             }
             return;
+        }
+
+        // The server rejects a change stream whose start point predates the oplog with
+        // ChangeStreamHistoryLost (286); some builds only surface it in the message.
+        private static bool IsChangeStreamHistoryLost(Exception? ex)
+        {
+            for (var e = ex; e != null; e = e.InnerException)
+            {
+                if (e is MongoCommandException mce &&
+                    (mce.Code == 286 || string.Equals(mce.CodeName, "ChangeStreamHistoryLost", StringComparison.OrdinalIgnoreCase)))
+                {
+                    return true;
+                }
+
+                if (!string.IsNullOrEmpty(e.Message) &&
+                    e.Message.IndexOf("resume point may no longer be in the oplog", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         private static async Task WatchChangeStreamUntilChangeAsync(Log log, MongoClient client, MigrationJob job, MigrationUnit mu, IMongoCollection<BsonDocument> collection, ChangeStreamOptions options, int seconds, bool syncBack, CancellationToken manualCts, bool useServerLevel = false)
