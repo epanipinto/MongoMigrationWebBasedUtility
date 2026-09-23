@@ -238,9 +238,13 @@ namespace OnlineMongoMigrationProcessor
                     _syncBack,
                     token);
             }
+            catch (OperationCanceledException)
+            {
+                // The bootstrap budget expired; the next round retries.
+            }
             catch (Exception ex)
             {
-                // do nothing
+                _log.WriteLine($"{_syncBackPrefix}Failed to initialize the server-level change stream resume token: {ex.Message}", LogType.Warning);
             }
         }
         private async Task<HashSet<string>> WatchServerLevelChangeStream()
