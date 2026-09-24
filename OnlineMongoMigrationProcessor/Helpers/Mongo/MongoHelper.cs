@@ -846,6 +846,9 @@ namespace OnlineMongoMigrationProcessor.Helpers.Mongo
 
         // The server rejects a change stream whose start point predates the oplog with
         // ChangeStreamHistoryLost (286); some builds only surface it in the message.
+        // A start point far enough back to reach pre-4.0 oplog entries fails differently again:
+        // the aggregate dies on a missing required field (wall/OplogEntryBase.wall) while parsing
+        // them. Same root cause, same remedy, so treat it the same rather than retrying forever.
         private static bool IsChangeStreamHistoryLost(Exception? ex)
         {
             for (var e = ex; e != null; e = e.InnerException)
@@ -856,8 +859,19 @@ namespace OnlineMongoMigrationProcessor.Helpers.Mongo
                     return true;
                 }
 
-                if (!string.IsNullOrEmpty(e.Message) &&
-                    e.Message.IndexOf("resume point may no longer be in the oplog", StringComparison.OrdinalIgnoreCase) >= 0)
+                if (string.IsNullOrEmpty(e.Message))
+                {
+                    continue;
+                }
+
+                if (e.Message.IndexOf("resume point may no longer be in the oplog", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    return true;
+                }
+
+                if (e.Message.IndexOf("OplogEntryBase.wall", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    (e.Message.IndexOf("'wall'", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                     e.Message.IndexOf("is missing but a required field", StringComparison.OrdinalIgnoreCase) >= 0))
                 {
                     return true;
                 }
